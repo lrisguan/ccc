@@ -1,0 +1,9 @@
+# dir
+.vscode/
+build/
+
+# file
+*.o
+*.d
+*.so
+*.a
