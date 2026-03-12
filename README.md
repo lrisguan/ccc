@@ -68,7 +68,7 @@ git clone https://github.com/lrisguan/ccc.git
 cmake -S . -B build
 cmake --build build -j
 ```
-### test
+### Test
 test pre-written C file.
 ```bash
 ctest --test-dir /home/lrisguan/code/ccc/build --output-on-failure
@@ -140,3 +140,6 @@ $ccc input.c -o output -O2
 ## Notes
 
 This is intentionally a subset compiler, not a full ISO C compiler. The design emphasizes clear architecture and incremental extensibility.
+
+## License
+GPLv2
