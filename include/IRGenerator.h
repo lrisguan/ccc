@@ -27,6 +27,7 @@ class Value;
 class Function;
 class Type;
 class AllocaInst;
+class StructType;
 } // namespace llvm
 
 namespace ccc {
@@ -42,7 +43,21 @@ public:
   bool EmitObjectFile(const std::string &path) const;
 
 private:
+  struct LocalBinding {
+    llvm::AllocaInst *alloca = nullptr;
+    Type type;
+  };
+
+  struct LValue {
+    llvm::Value *ptr = nullptr;
+    Type type;
+  };
+
   llvm::Type *ToLLVMType(const Type &type) const;
+  std::string TagKey(UserTypeKind kind, const std::string &tag) const;
+  const TagTypeDecl *LookupTagType(const Type &type) const;
+  Type InferExprType(const Expr &expr) const;
+  LValue EmitLValue(const Expr &expr);
   llvm::Value *CastValueToType(llvm::Value *value, const Type &from,
                                const Type &to);
   bool DeclareFunctions(const Program &program);
@@ -50,8 +65,9 @@ private:
 
   void EnterScope();
   void ExitScope();
-  bool DeclareLocal(const std::string &name, llvm::AllocaInst *alloca);
-  llvm::AllocaInst *LookupLocal(const std::string &name) const;
+  bool DeclareLocal(const std::string &name, llvm::AllocaInst *alloca,
+							const Type &type);
+  const LocalBinding *LookupLocal(const std::string &name) const;
 
   llvm::AllocaInst *CreateEntryAlloca(llvm::Function *fn,
                                       const std::string &name,
@@ -65,8 +81,9 @@ private:
   std::unique_ptr<llvm::Module> module_;
   std::unique_ptr<llvm::IRBuilder<>> builder_;
   llvm::Function *current_function_ = nullptr;
-  std::vector<std::unordered_map<std::string, llvm::AllocaInst *>>
-      local_scopes_;
+  std::vector<std::unordered_map<std::string, LocalBinding>> local_scopes_;
+  std::unordered_map<std::string, TagTypeDecl> tag_types_;
+  mutable std::unordered_map<std::string, llvm::StructType *> struct_types_;
 };
 
 } // namespace ccc

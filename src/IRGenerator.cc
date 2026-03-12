@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "llvm/ADT/StringRef.h"
@@ -84,6 +85,9 @@ Type TypeFromLLVMType(llvm::Type *type) {
 }
 
 llvm::Value *ZeroValueForType(llvm::Type *type) {
+  if (type->isAggregateType()) {
+    return llvm::Constant::getNullValue(type);
+  }
   if (type->isPointerTy()) {
     return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(type));
   }
@@ -118,30 +122,265 @@ IRGenerator::IRGenerator(DiagnosticEngine &diag)
 IRGenerator::~IRGenerator() = default;
 
 llvm::Type *IRGenerator::ToLLVMType(const Type &type) const {
+  if (type.function_pointer) {
+    std::vector<llvm::Type *> arg_types;
+    arg_types.reserve(type.function_pointer->param_types.size());
+    for (const auto &param : type.function_pointer->param_types) {
+      arg_types.push_back(ToLLVMType(param));
+    }
+    llvm::Type *ret = ToLLVMType(type.function_pointer->return_type);
+    auto *fn_type =
+        llvm::FunctionType::get(ret, arg_types, type.function_pointer->is_variadic);
+
+    llvm::Type *lowered = llvm::PointerType::getUnqual(fn_type);
+    for (unsigned i = 1; i < type.pointer_depth; ++i) {
+      lowered = llvm::PointerType::getUnqual(lowered);
+    }
+    return lowered;
+  }
+
   llvm::Type *base = nullptr;
-  switch (type.base) {
-  case BaseType::Int:
+  if (type.user_kind == UserTypeKind::Struct ||
+      type.user_kind == UserTypeKind::Union) {
+    const TagTypeDecl *tag_decl = LookupTagType(type);
+    if (!tag_decl) {
+      base = llvm::Type::getInt8Ty(*context_);
+    } else if (type.user_kind == UserTypeKind::Struct) {
+      const std::string key = TagKey(type.user_kind, type.user_tag);
+      auto found = struct_types_.find(key);
+      if (found != struct_types_.end()) {
+        base = found->second;
+      } else {
+        auto *struct_ty = llvm::StructType::create(*context_, key);
+        struct_types_[key] = struct_ty;
+        std::vector<llvm::Type *> fields;
+        fields.reserve(tag_decl->members.size());
+        for (const auto &field : tag_decl->members) {
+          fields.push_back(ToLLVMType(field.type));
+        }
+        if (fields.empty()) {
+          fields.push_back(llvm::Type::getInt8Ty(*context_));
+        }
+        struct_ty->setBody(fields, false);
+        base = struct_ty;
+      }
+    } else {
+      uint64_t max_size = 1;
+      const llvm::DataLayout &layout = module_->getDataLayout();
+      for (const auto &field : tag_decl->members) {
+        llvm::Type *field_ty = ToLLVMType(field.type);
+        const uint64_t size =
+            layout.isDefault() ? 1 : layout.getTypeAllocSize(field_ty);
+        if (size > max_size) {
+          max_size = size;
+        }
+      }
+      base = llvm::ArrayType::get(llvm::Type::getInt8Ty(*context_), max_size);
+    }
+  } else if (type.user_kind == UserTypeKind::Enum) {
     base = llvm::Type::getInt32Ty(*context_);
-    break;
-  case BaseType::Char:
-    base = llvm::Type::getInt8Ty(*context_);
-    break;
-  case BaseType::Float:
-    base = llvm::Type::getFloatTy(*context_);
-    break;
-  case BaseType::Double:
-    base = llvm::Type::getDoubleTy(*context_);
-    break;
-  case BaseType::Void:
-    base = type.pointer_depth > 0 ? llvm::Type::getInt8Ty(*context_)
-                                  : llvm::Type::getVoidTy(*context_);
-    break;
+  } else {
+    switch (type.base) {
+    case BaseType::Int:
+      base = llvm::Type::getInt32Ty(*context_);
+      break;
+    case BaseType::Char:
+      base = llvm::Type::getInt8Ty(*context_);
+      break;
+    case BaseType::Float:
+      base = llvm::Type::getFloatTy(*context_);
+      break;
+    case BaseType::Double:
+      base = llvm::Type::getDoubleTy(*context_);
+      break;
+    case BaseType::Void:
+      base = type.pointer_depth > 0 || !type.array_dimensions.empty()
+                 ? llvm::Type::getInt8Ty(*context_)
+                 : llvm::Type::getVoidTy(*context_);
+      break;
+    }
   }
 
   for (unsigned i = 0; i < type.pointer_depth; ++i) {
     base = llvm::PointerType::getUnqual(base);
   }
+
+  for (auto it = type.array_dimensions.rbegin();
+       it != type.array_dimensions.rend(); ++it) {
+    base = llvm::ArrayType::get(base, *it);
+  }
   return base;
+}
+
+std::string IRGenerator::TagKey(UserTypeKind kind, const std::string &tag) const {
+  switch (kind) {
+  case UserTypeKind::Struct:
+    return "struct:" + tag;
+  case UserTypeKind::Union:
+    return "union:" + tag;
+  case UserTypeKind::Enum:
+    return "enum:" + tag;
+  case UserTypeKind::None:
+    return "none:" + tag;
+  }
+  return "none:" + tag;
+}
+
+const TagTypeDecl *IRGenerator::LookupTagType(const Type &type) const {
+  if (type.user_kind == UserTypeKind::None || type.user_tag.empty()) {
+    return nullptr;
+  }
+  const auto found = tag_types_.find(TagKey(type.user_kind, type.user_tag));
+  if (found == tag_types_.end()) {
+    return nullptr;
+  }
+  return &found->second;
+}
+
+Type IRGenerator::InferExprType(const Expr &expr) const {
+  if (const auto *e = dynamic_cast<const IntegerLiteralExpr *>(&expr)) {
+    (void)e;
+    return Type{BaseType::Int, 0};
+  }
+  if (const auto *e = dynamic_cast<const FloatingLiteralExpr *>(&expr)) {
+    (void)e;
+    return Type{BaseType::Double, 0};
+  }
+  if (const auto *e = dynamic_cast<const StringLiteralExpr *>(&expr)) {
+    (void)e;
+    return Type{BaseType::Char, 1};
+  }
+  if (const auto *e = dynamic_cast<const CastExpr *>(&expr)) {
+    return e->target_type;
+  }
+  if (const auto *e = dynamic_cast<const IdentifierExpr *>(&expr)) {
+    if (const LocalBinding *binding = LookupLocal(e->name)) {
+      Type type = binding->type;
+      if (!type.array_dimensions.empty()) {
+        type.array_dimensions.erase(type.array_dimensions.begin());
+        ++type.pointer_depth;
+      }
+      return type;
+    }
+    if (llvm::Function *fn = module_->getFunction(e->name)) {
+      Type type;
+      type.base = BaseType::Void;
+      type.pointer_depth = 1;
+      type.function_pointer = std::make_shared<FunctionPointerSignature>();
+      type.function_pointer->return_type = TypeFromLLVMType(fn->getReturnType());
+      for (llvm::Type *param_ty : fn->getFunctionType()->params()) {
+        type.function_pointer->param_types.push_back(TypeFromLLVMType(param_ty));
+      }
+      type.function_pointer->is_variadic = fn->isVarArg();
+      return type;
+    }
+  }
+  if (const auto *e = dynamic_cast<const MemberExpr *>(&expr)) {
+    Type base = InferExprType(*e->base);
+    if (e->via_pointer && base.pointer_depth > 0) {
+      --base.pointer_depth;
+    }
+    const TagTypeDecl *tag_decl = LookupTagType(base);
+    if (!tag_decl) {
+      return Type{BaseType::Int, 0};
+    }
+    for (const auto &field : tag_decl->members) {
+      if (field.name == e->member_name) {
+        Type field_type = field.type;
+        if (!field_type.array_dimensions.empty()) {
+          field_type.array_dimensions.erase(field_type.array_dimensions.begin());
+          ++field_type.pointer_depth;
+        }
+        return field_type;
+      }
+    }
+  }
+  return Type{BaseType::Int, 0};
+}
+
+IRGenerator::LValue IRGenerator::EmitLValue(const Expr &expr) {
+  if (const auto *id = dynamic_cast<const IdentifierExpr *>(&expr)) {
+    const LocalBinding *binding = LookupLocal(id->name);
+    if (!binding) {
+      diag_.ReportError(id->location,
+                        "unknown variable in codegen: '" + id->name + "'");
+      return LValue{};
+    }
+    return LValue{binding->alloca, binding->type};
+  }
+
+  if (const auto *member = dynamic_cast<const MemberExpr *>(&expr)) {
+    Type aggregate_type;
+    llvm::Value *aggregate_ptr = nullptr;
+
+    if (member->via_pointer) {
+      aggregate_type = InferExprType(*member->base);
+      if (aggregate_type.pointer_depth == 0) {
+        diag_.ReportError(member->location,
+                          "'->' requires pointer base in codegen");
+        return LValue{};
+      }
+      --aggregate_type.pointer_depth;
+      aggregate_ptr = EmitExpr(*member->base);
+    } else {
+      LValue base = EmitLValue(*member->base);
+      aggregate_type = base.type;
+      aggregate_ptr = base.ptr;
+    }
+
+    if (!aggregate_ptr) {
+      return LValue{};
+    }
+    const TagTypeDecl *tag_decl = LookupTagType(aggregate_type);
+    if (!tag_decl) {
+      diag_.ReportError(member->location,
+                        "unknown or incomplete aggregate type in codegen");
+      return LValue{};
+    }
+
+    size_t index = 0;
+    bool found = false;
+    Type field_type;
+    for (size_t i = 0; i < tag_decl->members.size(); ++i) {
+      if (tag_decl->members[i].name == member->member_name) {
+        index = i;
+        field_type = tag_decl->members[i].type;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      diag_.ReportError(member->location,
+                        "unknown member in codegen: '" + member->member_name +
+                            "'");
+      return LValue{};
+    }
+
+    llvm::Type *aggregate_llvm_type = ToLLVMType(aggregate_type);
+    llvm::Value *typed_base_ptr = aggregate_ptr;
+    llvm::Type *expected_ptr_type =
+        llvm::PointerType::getUnqual(aggregate_llvm_type);
+    if (typed_base_ptr->getType() != expected_ptr_type) {
+      typed_base_ptr =
+          builder_->CreateBitCast(typed_base_ptr, expected_ptr_type, "agg.cast");
+    }
+
+    if (aggregate_type.user_kind == UserTypeKind::Union) {
+      llvm::Type *field_ptr_ty =
+          llvm::PointerType::getUnqual(ToLLVMType(field_type));
+      llvm::Value *field_ptr =
+          builder_->CreateBitCast(typed_base_ptr, field_ptr_ty, "union.field");
+      return LValue{field_ptr, field_type};
+    }
+
+    llvm::Value *field_ptr = builder_->CreateStructGEP(
+        aggregate_llvm_type, typed_base_ptr, index, "struct.field");
+    return LValue{field_ptr, field_type};
+  }
+
+  diag_.ReportError(expr.location,
+                    "left-hand side is not assignable in codegen");
+  return LValue{};
 }
 
 llvm::Value *IRGenerator::CastValueToType(llvm::Value *value, const Type &from,
@@ -251,7 +490,8 @@ void IRGenerator::ExitScope() {
 }
 
 bool IRGenerator::DeclareLocal(const std::string &name,
-                               llvm::AllocaInst *alloca) {
+                               llvm::AllocaInst *alloca,
+                               const Type &type) {
   if (local_scopes_.empty()) {
     EnterScope();
   }
@@ -259,15 +499,16 @@ bool IRGenerator::DeclareLocal(const std::string &name,
   if (scope.find(name) != scope.end()) {
     return false;
   }
-  scope.emplace(name, alloca);
+  scope.emplace(name, LocalBinding{alloca, type});
   return true;
 }
 
-llvm::AllocaInst *IRGenerator::LookupLocal(const std::string &name) const {
+const IRGenerator::LocalBinding *
+IRGenerator::LookupLocal(const std::string &name) const {
   for (auto it = local_scopes_.rbegin(); it != local_scopes_.rend(); ++it) {
     const auto found = it->find(name);
     if (found != it->end()) {
-      return found->second;
+      return &found->second;
     }
   }
   return nullptr;
@@ -317,22 +558,51 @@ llvm::Value *IRGenerator::EmitExpr(const Expr &expr) {
   }
 
   if (const auto *e = dynamic_cast<const IdentifierExpr *>(&expr)) {
-    llvm::AllocaInst *slot = LookupLocal(e->name);
-    if (!slot) {
+    const LocalBinding *binding = LookupLocal(e->name);
+    if (!binding) {
+      if (llvm::Function *fn = module_->getFunction(e->name)) {
+        return fn;
+      }
       diag_.ReportError(e->location,
                         "unknown variable in codegen: '" + e->name + "'");
       return nullptr;
     }
+
+    if (IsArrayType(binding->type)) {
+      llvm::AllocaInst *slot = binding->alloca;
+      llvm::Value *zero = llvm::ConstantInt::get(
+          llvm::Type::getInt32Ty(*context_), 0, false);
+      return builder_->CreateInBoundsGEP(slot->getAllocatedType(), slot,
+                                         {zero, zero}, e->name + ".decay");
+    }
+    llvm::AllocaInst *slot = binding->alloca;
     return builder_->CreateLoad(slot->getAllocatedType(), slot,
                                 e->name + ".val");
   }
 
+  if (const auto *e = dynamic_cast<const MemberExpr *>(&expr)) {
+    LValue lvalue = EmitLValue(*e);
+    if (!lvalue.ptr) {
+      return nullptr;
+    }
+    if (IsArrayType(lvalue.type)) {
+      llvm::Type *array_ty = ToLLVMType(lvalue.type);
+      llvm::Value *zero = llvm::ConstantInt::get(
+          llvm::Type::getInt32Ty(*context_), 0, false);
+      return builder_->CreateInBoundsGEP(array_ty, lvalue.ptr, {zero, zero},
+                                         "member.decay");
+    }
+    return builder_->CreateLoad(ToLLVMType(lvalue.type), lvalue.ptr,
+                                "member.val");
+  }
+
   if (const auto *e = dynamic_cast<const AssignmentExpr *>(&expr)) {
-    llvm::AllocaInst *slot = LookupLocal(e->name);
-    if (!slot) {
-      diag_.ReportError(e->location,
-                        "assignment to unknown variable in codegen: '" +
-                            e->name + "'");
+    LValue target = EmitLValue(*e->target);
+    if (!target.ptr) {
+      return nullptr;
+    }
+    if (IsArrayType(target.type)) {
+      diag_.ReportError(e->location, "assignment to array object is unsupported");
       return nullptr;
     }
     llvm::Value *rhs = EmitExpr(*e->value);
@@ -340,9 +610,9 @@ llvm::Value *IRGenerator::EmitExpr(const Expr &expr) {
       return nullptr;
     }
     const Type from = TypeFromLLVMType(rhs->getType());
-    const Type to = TypeFromLLVMType(slot->getAllocatedType());
+    const Type to = target.type;
     rhs = CastValueToType(rhs, from, to);
-    builder_->CreateStore(rhs, slot);
+    builder_->CreateStore(rhs, target.ptr);
     return rhs;
   }
 
@@ -654,13 +924,18 @@ bool IRGenerator::EmitStmt(const Stmt &stmt) {
   if (const auto *s = dynamic_cast<const VarDeclStmt *>(&stmt)) {
     llvm::AllocaInst *slot =
         CreateEntryAlloca(current_function_, s->name, s->type);
-    if (!DeclareLocal(s->name, slot)) {
+    if (!DeclareLocal(s->name, slot, s->type)) {
       diag_.ReportError(s->location,
                         "duplicate local in codegen scope: '" + s->name + "'");
       return false;
     }
     llvm::Value *init = ZeroValueForType(slot->getAllocatedType());
     if (s->initializer) {
+      if (IsArrayType(s->type)) {
+        diag_.ReportError(s->location,
+                          "array initializer is not supported yet in codegen");
+        return false;
+      }
       init = EmitExpr(*s->initializer);
       if (!init) {
         return false;
@@ -801,7 +1076,7 @@ bool IRGenerator::EmitFunction(const FunctionDecl &fn_decl) {
     llvm::AllocaInst *slot =
         CreateEntryAlloca(fn, std::string(arg.getName()), arg_type);
     builder_->CreateStore(&arg, slot);
-    DeclareLocal(std::string(arg.getName()), slot);
+    DeclareLocal(std::string(arg.getName()), slot, arg_type);
     ++index;
   }
 
@@ -833,6 +1108,14 @@ bool IRGenerator::EmitFunction(const FunctionDecl &fn_decl) {
 bool IRGenerator::GenerateModule(const Program &program,
                                  const std::string &module_name) {
   module_ = std::make_unique<llvm::Module>(module_name, *context_);
+  tag_types_.clear();
+  struct_types_.clear();
+  for (const auto &tag_decl : program.tag_types) {
+    if (tag_decl.kind == UserTypeKind::None || tag_decl.tag.empty()) {
+      continue;
+    }
+    tag_types_[TagKey(tag_decl.kind, tag_decl.tag)] = tag_decl;
+  }
 
   if (!DeclareFunctions(program)) {
     return false;

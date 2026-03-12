@@ -19,6 +19,39 @@ namespace {
 
 Type IntType() { return Type{BaseType::Int, 0}; }
 
+std::string TagKey(UserTypeKind kind, const std::string &tag) {
+  switch (kind) {
+  case UserTypeKind::Struct:
+    return "struct:" + tag;
+  case UserTypeKind::Union:
+    return "union:" + tag;
+  case UserTypeKind::Enum:
+    return "enum:" + tag;
+  case UserTypeKind::None:
+    return "none:" + tag;
+  }
+  return "none:" + tag;
+}
+
+Type DecayArrayType(Type type) {
+  if (!type.array_dimensions.empty()) {
+    type.array_dimensions.erase(type.array_dimensions.begin());
+    ++type.pointer_depth;
+  }
+  return type;
+}
+
+Type FunctionSymbolAsPointerType(const FunctionSymbol &symbol) {
+  Type type;
+  type.base = BaseType::Void;
+  type.pointer_depth = 1;
+  type.function_pointer = std::make_shared<FunctionPointerSignature>();
+  type.function_pointer->return_type = symbol.return_type;
+  type.function_pointer->param_types = symbol.param_types;
+  type.function_pointer->is_variadic = symbol.is_variadic;
+  return type;
+}
+
 bool IsConditionType(const Type &type) {
   return IsNumericType(type) || IsPointerType(type);
 }
@@ -31,6 +64,9 @@ SemanticAnalyzer::SemanticAnalyzer(DiagnosticEngine &diag) : diag_(diag) {
 
 bool SemanticAnalyzer::IsAssignable(const Type &target,
                                     const Type &source) const {
+  if (IsArrayType(target) || IsArrayType(source)) {
+    return target == source;
+  }
   if (target == source) {
     return true;
   }
@@ -38,12 +74,23 @@ bool SemanticAnalyzer::IsAssignable(const Type &target,
     return true;
   }
   if (IsPointerType(target) && IsPointerType(source)) {
+    if (target.function_pointer || source.function_pointer) {
+      return target == source;
+    }
     return IsVoidPointerType(target) || IsVoidPointerType(source);
   }
   return false;
 }
 
 bool SemanticAnalyzer::Analyze(const Program &program) {
+  tag_types_.clear();
+  for (const auto &tag_decl : program.tag_types) {
+    if (tag_decl.kind == UserTypeKind::None || tag_decl.tag.empty()) {
+      continue;
+    }
+    tag_types_[TagKey(tag_decl.kind, tag_decl.tag)] = tag_decl;
+  }
+
   for (const auto &fn : program.functions) {
     FunctionSymbol symbol;
     symbol.return_type = fn->return_type;
@@ -179,12 +226,24 @@ Type SemanticAnalyzer::AnalyzeExpr(const Expr &expr) {
 
   if (const auto *e = dynamic_cast<const IdentifierExpr *>(&expr)) {
     const auto sym = symbols_.LookupVariable(e->name);
+    if (sym.has_value()) {
+      return DecayArrayType(sym->type);
+    }
+
+    const auto fn = symbols_.LookupFunction(e->name);
+    if (fn.has_value()) {
+      return FunctionSymbolAsPointerType(*fn);
+    }
+
     if (!sym.has_value()) {
       diag_.ReportError(e->location,
                         "use of undeclared identifier: '" + e->name + "'");
       return IntType();
     }
-    return sym->type;
+  }
+
+  if (dynamic_cast<const MemberExpr *>(&expr)) {
+    return DecayArrayType(AnalyzeLValueExpr(expr));
   }
 
   if (const auto *e = dynamic_cast<const UnaryExpr *>(&expr)) {
@@ -257,21 +316,15 @@ Type SemanticAnalyzer::AnalyzeExpr(const Expr &expr) {
   }
 
   if (const auto *e = dynamic_cast<const AssignmentExpr *>(&expr)) {
-    const auto sym = symbols_.LookupVariable(e->name);
-    if (!sym.has_value()) {
-      diag_.ReportError(e->location, "assignment to undeclared identifier: '" +
-                                         e->name + "'");
-      AnalyzeExpr(*e->value);
-      return IntType();
-    }
+    const Type target_type = AnalyzeLValueExpr(*e->target);
     const Type value_type = AnalyzeExpr(*e->value);
-    if (!IsAssignable(sym->type, value_type)) {
+    if (!IsAssignable(target_type, value_type)) {
       diag_.ReportError(e->value->location,
                         "assignment value type '" + TypeToString(value_type) +
                             "' does not match variable type '" +
-                            TypeToString(sym->type) + "'");
+                            TypeToString(target_type) + "'");
     }
-    return sym->type;
+    return target_type;
   }
 
   if (const auto *e = dynamic_cast<const CallExpr *>(&expr)) {
@@ -310,6 +363,77 @@ Type SemanticAnalyzer::AnalyzeExpr(const Expr &expr) {
     return fn->return_type;
   }
 
+  return IntType();
+}
+
+const TagTypeDecl *SemanticAnalyzer::LookupTagType(const Type &type) const {
+  if (type.user_kind != UserTypeKind::Struct &&
+      type.user_kind != UserTypeKind::Union &&
+      type.user_kind != UserTypeKind::Enum) {
+    return nullptr;
+  }
+  const auto found = tag_types_.find(TagKey(type.user_kind, type.user_tag));
+  if (found == tag_types_.end()) {
+    return nullptr;
+  }
+  return &found->second;
+}
+
+Type SemanticAnalyzer::AnalyzeLValueExpr(const Expr &expr) {
+  if (const auto *id = dynamic_cast<const IdentifierExpr *>(&expr)) {
+    const auto sym = symbols_.LookupVariable(id->name);
+    if (!sym.has_value()) {
+      diag_.ReportError(id->location,
+                        "assignment to undeclared identifier: '" + id->name +
+                            "'");
+      return IntType();
+    }
+    return sym->type;
+  }
+
+  if (const auto *member = dynamic_cast<const MemberExpr *>(&expr)) {
+    Type base_type = AnalyzeExpr(*member->base);
+    if (member->via_pointer) {
+      if (base_type.pointer_depth == 0) {
+        diag_.ReportError(member->location,
+                          "'->' requires a pointer to struct or union");
+        return IntType();
+      }
+      --base_type.pointer_depth;
+    } else if (base_type.pointer_depth > 0) {
+      diag_.ReportError(member->location,
+                        "'.' requires a struct/union object, not pointer");
+      return IntType();
+    }
+
+    if (base_type.user_kind != UserTypeKind::Struct &&
+        base_type.user_kind != UserTypeKind::Union) {
+      diag_.ReportError(member->location,
+                        "member access requires struct or union type");
+      return IntType();
+    }
+
+    const TagTypeDecl *tag_decl = LookupTagType(base_type);
+    if (!tag_decl) {
+      diag_.ReportError(member->location,
+                        "unknown or incomplete tag type for member access");
+      return IntType();
+    }
+
+    for (const auto &field : tag_decl->members) {
+      if (field.name == member->member_name) {
+        return field.type;
+      }
+    }
+
+    diag_.ReportError(member->location,
+                      "unknown member '" + member->member_name + "' in " +
+                          TypeToString(base_type));
+    return IntType();
+  }
+
+  diag_.ReportError(expr.location,
+                    "left-hand side of assignment must be an lvalue");
   return IntType();
 }
 

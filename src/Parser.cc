@@ -11,6 +11,7 @@
 
 #include "Parser.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace ccc {
@@ -42,7 +43,8 @@ bool Parser::Expect(TokenKind kind, const char *message) {
 bool Parser::IsTypeSpecifier(TokenKind kind) const {
   return kind == TokenKind::KwInt || kind == TokenKind::KwChar ||
          kind == TokenKind::KwFloat || kind == TokenKind::KwDouble ||
-         kind == TokenKind::KwVoid;
+         kind == TokenKind::KwVoid || kind == TokenKind::KwStruct ||
+         kind == TokenKind::KwUnion || kind == TokenKind::KwEnum;
 }
 
 void Parser::Advance() {
@@ -65,6 +67,9 @@ void Parser::Synchronize() {
     case TokenKind::KwFloat:
     case TokenKind::KwDouble:
     case TokenKind::KwVoid:
+    case TokenKind::KwStruct:
+    case TokenKind::KwUnion:
+    case TokenKind::KwEnum:
     case TokenKind::KwExtern:
     case TokenKind::LBrace:
       return;
@@ -76,27 +81,240 @@ void Parser::Synchronize() {
 }
 
 Type Parser::ParseType() {
-  Type type;
-  if (Match(TokenKind::KwInt)) {
-    type.base = BaseType::Int;
-  } else if (Match(TokenKind::KwChar)) {
-    type.base = BaseType::Char;
-  } else if (Match(TokenKind::KwFloat)) {
-    type.base = BaseType::Float;
-  } else if (Match(TokenKind::KwDouble)) {
-    type.base = BaseType::Double;
-  } else if (Match(TokenKind::KwVoid)) {
-    type.base = BaseType::Void;
-  } else {
-    diag_.ReportError(current_.location, "expected type specifier");
-    type.base = BaseType::Int;
-  }
+  Type type = ParseTypeSpecifier();
 
   while (Match(TokenKind::Star)) {
     ++type.pointer_depth;
   }
 
   return type;
+}
+
+Type Parser::ParseTypeSpecifier() {
+  Type type;
+  if (Match(TokenKind::KwInt)) {
+    type.base = BaseType::Int;
+    return type;
+  }
+  if (Match(TokenKind::KwChar)) {
+    type.base = BaseType::Char;
+    return type;
+  }
+  if (Match(TokenKind::KwFloat)) {
+    type.base = BaseType::Float;
+    return type;
+  }
+  if (Match(TokenKind::KwDouble)) {
+    type.base = BaseType::Double;
+    return type;
+  }
+  if (Match(TokenKind::KwVoid)) {
+    type.base = BaseType::Void;
+    return type;
+  }
+
+  if (Match(TokenKind::KwStruct) || Match(TokenKind::KwUnion) ||
+      Match(TokenKind::KwEnum)) {
+    const TokenKind kind = previous_.kind;
+    if (kind == TokenKind::KwStruct) {
+      type.user_kind = UserTypeKind::Struct;
+    } else if (kind == TokenKind::KwUnion) {
+      type.user_kind = UserTypeKind::Union;
+    } else {
+      type.user_kind = UserTypeKind::Enum;
+    }
+
+    if (Match(TokenKind::Identifier)) {
+      type.user_tag = previous_.lexeme;
+    }
+    if (Check(TokenKind::LBrace)) {
+      std::vector<TagMemberDecl> members;
+      if (type.user_kind == UserTypeKind::Enum) {
+        if (Expect(TokenKind::LBrace, "expected '{' in enum definition")) {
+          while (!Check(TokenKind::RBrace) && !Check(TokenKind::EndOfFile)) {
+            if (!Match(TokenKind::Identifier)) {
+              diag_.ReportError(current_.location,
+                                "expected enumerator identifier");
+              Advance();
+              continue;
+            }
+            if (Match(TokenKind::Equal)) {
+              ParseExpression();
+            }
+            Match(TokenKind::Comma);
+          }
+          Expect(TokenKind::RBrace, "expected '}' to close enum definition");
+        }
+      } else {
+        members = ParseTagDefinitionBody();
+      }
+      if (type.user_tag.empty()) {
+        type.user_tag = "__anon_" + std::to_string(parsed_tag_types_.size() + 1);
+      }
+      RegisterTagTypeDecl(type.user_kind, type.user_tag, members);
+    }
+    return type;
+  }
+
+  diag_.ReportError(current_.location, "expected type specifier");
+  type.base = BaseType::Int;
+  return type;
+}
+
+std::vector<TagMemberDecl> Parser::ParseTagDefinitionBody() {
+  std::vector<TagMemberDecl> members;
+  if (!Expect(TokenKind::LBrace, "expected '{' in tag definition")) {
+    return members;
+  }
+
+  while (!Check(TokenKind::RBrace) && !Check(TokenKind::EndOfFile)) {
+    if (!IsTypeSpecifier(current_.kind)) {
+      diag_.ReportError(current_.location,
+                        "expected member declaration in tag definition");
+      Advance();
+      continue;
+    }
+
+    const Type base = ParseTypeSpecifier();
+    if (Check(TokenKind::Semicolon)) {
+      Advance();
+      continue;
+    }
+
+    while (true) {
+      auto decl = ParseDeclarator(base, true, false);
+      if (decl.name.empty()) {
+        break;
+      }
+      members.push_back(TagMemberDecl{decl.name, decl.type});
+      if (!Match(TokenKind::Comma)) {
+        break;
+      }
+    }
+    Expect(TokenKind::Semicolon,
+           "expected ';' after member declaration in tag definition");
+  }
+
+  Expect(TokenKind::RBrace, "expected '}' to close tag definition");
+  return members;
+}
+
+void Parser::RegisterTagTypeDecl(UserTypeKind kind, const std::string &tag,
+                                 const std::vector<TagMemberDecl> &members) {
+  if (tag.empty() || kind == UserTypeKind::None) {
+    return;
+  }
+  auto found = std::find_if(parsed_tag_types_.begin(), parsed_tag_types_.end(),
+                            [&](const TagTypeDecl &decl) {
+                              return decl.kind == kind && decl.tag == tag;
+                            });
+  if (found != parsed_tag_types_.end()) {
+    found->members = members;
+    return;
+  }
+  TagTypeDecl decl;
+  decl.kind = kind;
+  decl.tag = tag;
+  decl.members = members;
+  parsed_tag_types_.push_back(std::move(decl));
+}
+
+Parser::ParsedDeclarator Parser::ParseDeclarator(const Type &base_type,
+                                                 bool require_identifier,
+                                                 bool allow_function_suffix) {
+  ParsedDeclarator decl;
+  decl.type = base_type;
+
+  unsigned leading_ptr = 0;
+  while (Match(TokenKind::Star)) {
+    ++leading_ptr;
+  }
+
+  if (Match(TokenKind::LParen)) {
+    if (Match(TokenKind::Star)) {
+      unsigned fn_ptr_depth = 1;
+      while (Match(TokenKind::Star)) {
+        ++fn_ptr_depth;
+      }
+      if (!Expect(TokenKind::Identifier,
+                  "expected identifier in function pointer declarator")) {
+        decl.type.base = BaseType::Int;
+        return decl;
+      }
+      decl.name = previous_.lexeme;
+      if (!Expect(TokenKind::RParen,
+                  "expected ')' after function pointer name")) {
+        return decl;
+      }
+      if (!Expect(TokenKind::LParen,
+                  "expected '(' after function pointer declarator")) {
+        return decl;
+      }
+      bool is_variadic = false;
+      auto params = ParseParameterList(is_variadic);
+      Expect(TokenKind::RParen, "expected ')' after parameter list");
+
+      Type return_type = decl.type;
+      return_type.pointer_depth += leading_ptr;
+
+      decl.type = Type{};
+      decl.type.base = BaseType::Void;
+      decl.type.pointer_depth = fn_ptr_depth;
+      decl.type.function_pointer = std::make_shared<FunctionPointerSignature>();
+      decl.type.function_pointer->return_type = return_type;
+      for (const auto &p : params) {
+        decl.type.function_pointer->param_types.push_back(p.type);
+      }
+      decl.type.function_pointer->is_variadic = is_variadic;
+      return decl;
+    }
+
+    diag_.ReportError(previous_.location,
+                      "unsupported parenthesized declarator form");
+    while (!Check(TokenKind::RParen) && !Check(TokenKind::EndOfFile)) {
+      Advance();
+    }
+    Expect(TokenKind::RParen, "expected ')' to close declarator");
+  }
+
+  if (decl.name.empty()) {
+    if (Match(TokenKind::Identifier)) {
+      decl.name = previous_.lexeme;
+    } else if (require_identifier) {
+      diag_.ReportError(current_.location, "expected identifier");
+    }
+  }
+
+  decl.type.pointer_depth += leading_ptr;
+
+  while (Match(TokenKind::LBracket)) {
+    unsigned dim = 0;
+    if (Match(TokenKind::Number)) {
+      if (previous_.is_floating || previous_.int_value <= 0) {
+        diag_.ReportError(previous_.location,
+                          "array dimension must be a positive integer");
+        dim = 1;
+      } else {
+        dim = static_cast<unsigned>(previous_.int_value);
+      }
+    } else {
+      diag_.ReportError(current_.location,
+                        "expected array dimension size literal");
+      dim = 1;
+    }
+    Expect(TokenKind::RBracket, "expected ']' after array dimension");
+    decl.type.array_dimensions.push_back(dim);
+  }
+
+  if (allow_function_suffix && Match(TokenKind::LParen)) {
+    decl.is_function = true;
+    bool is_variadic = false;
+    decl.function_params = ParseParameterList(is_variadic);
+    decl.function_is_variadic = is_variadic;
+    Expect(TokenKind::RParen, "expected ')' after parameters");
+  }
+
+  return decl;
 }
 
 std::unique_ptr<Program> Parser::ParseProgram() {
@@ -113,27 +331,26 @@ std::unique_ptr<Program> Parser::ParseProgram() {
     }
     Advance();
   }
+  program->tag_types = parsed_tag_types_;
   return program;
 }
 
 std::unique_ptr<FunctionDecl> Parser::ParseFunction() {
   const SourceLocation start = current_.location;
   const bool is_extern = Match(TokenKind::KwExtern);
-  const Type return_type = ParseType();
-
-  if (!Expect(TokenKind::Identifier, "expected function name")) {
+  const Type return_spec = ParseTypeSpecifier();
+  auto decl = ParseDeclarator(return_spec, true, true);
+  if (!decl.is_function) {
+    diag_.ReportError(start, "top-level declarations must be functions");
     return nullptr;
   }
-  std::string name = previous_.lexeme;
-
-  if (!Expect(TokenKind::LParen, "expected '(' after function name")) {
+  if (IsArrayType(decl.type)) {
+    diag_.ReportError(start, "function return type cannot be an array");
     return nullptr;
   }
-  bool is_variadic = false;
-  auto params = ParseParameterList(is_variadic);
-  if (!Expect(TokenKind::RParen, "expected ')' after parameters")) {
-    return nullptr;
-  }
+  std::string fn_name = decl.name;
+  Type return_type = decl.type;
+  auto params = decl.function_params;
 
   std::unique_ptr<CompoundStmt> body;
   if (Match(TokenKind::Semicolon)) {
@@ -155,9 +372,9 @@ std::unique_ptr<FunctionDecl> Parser::ParseFunction() {
     return nullptr;
   }
 
-  return std::make_unique<FunctionDecl>(start, std::move(name), return_type,
+  return std::make_unique<FunctionDecl>(start, std::move(fn_name), return_type,
                                         std::move(params), std::move(body),
-                                        is_extern, is_variadic);
+                                        is_extern, decl.function_is_variadic);
 }
 
 std::vector<ParamDecl> Parser::ParseParameterList(bool &is_variadic) {
@@ -173,14 +390,20 @@ std::vector<ParamDecl> Parser::ParseParameterList(bool &is_variadic) {
 
   while (true) {
     const SourceLocation loc = current_.location;
-    const Type type = ParseType();
-    if (params.empty() && IsVoidType(type) && Check(TokenKind::RParen)) {
+    const Type base = ParseTypeSpecifier();
+    if (params.empty() && IsVoidType(base) && Check(TokenKind::RParen)) {
       return params;
     }
-    if (!Expect(TokenKind::Identifier, "expected parameter name")) {
+    auto decl = ParseDeclarator(base, true, false);
+    if (decl.name.empty()) {
       break;
     }
-    params.push_back(ParamDecl{loc, previous_.lexeme, type});
+    Type param_type = decl.type;
+    if (!param_type.array_dimensions.empty()) {
+      param_type.array_dimensions.erase(param_type.array_dimensions.begin());
+      ++param_type.pointer_depth;
+    }
+    params.push_back(ParamDecl{loc, decl.name, param_type});
     if (!Match(TokenKind::Comma)) {
       break;
     }
@@ -289,26 +512,32 @@ std::unique_ptr<Stmt> Parser::ParseReturnStatement() {
 
 std::unique_ptr<Stmt> Parser::ParseVarDeclStatement() {
   const SourceLocation loc = current_.location;
-  const Type type = ParseType();
-  if (IsVoidType(type)) {
-    diag_.ReportError(loc, "variables cannot have type void");
+  const Type base = ParseTypeSpecifier();
+
+  if (Check(TokenKind::Semicolon)) {
+    Advance();
+    return std::make_unique<ExprStmt>(loc, nullptr);
   }
+
   std::vector<std::unique_ptr<Stmt>> decls;
 
   while (true) {
-    if (!Expect(TokenKind::Identifier, "expected variable name")) {
+    auto decl = ParseDeclarator(base, true, false);
+    if (decl.name.empty()) {
       Synchronize();
       return nullptr;
     }
+    if (IsVoidType(decl.type)) {
+      diag_.ReportError(loc, "variables cannot have type void");
+    }
 
-    std::string name = previous_.lexeme;
     std::unique_ptr<Expr> init;
     if (Match(TokenKind::Equal)) {
       init = ParseExpression();
     }
 
-    decls.push_back(std::make_unique<VarDeclStmt>(loc, std::move(name), type,
-                                                  std::move(init)));
+    decls.push_back(std::make_unique<VarDeclStmt>(
+        loc, std::move(decl.name), decl.type, std::move(init)));
 
     if (!Match(TokenKind::Comma)) {
       break;
@@ -348,13 +577,8 @@ std::unique_ptr<Expr> Parser::ParseAssignment() {
   if (Match(TokenKind::Equal)) {
     const SourceLocation loc = previous_.location;
     auto rhs = ParseAssignment();
-    auto *ident = dynamic_cast<IdentifierExpr *>(lhs.get());
-    if (!ident) {
-      diag_.ReportError(loc,
-                        "left-hand side of assignment must be an identifier");
-      return rhs;
-    }
-    return std::make_unique<AssignmentExpr>(loc, ident->name, std::move(rhs));
+    return std::make_unique<AssignmentExpr>(loc, std::move(lhs),
+                                            std::move(rhs));
   }
   return lhs;
 }
@@ -472,7 +696,26 @@ std::unique_ptr<Expr> Parser::ParseUnary() {
     return std::make_unique<UnaryExpr>(previous_.location, UnaryOp::LogicalNot,
                                        std::move(operand));
   }
-  return ParsePrimary();
+  return ParsePostfix();
+}
+
+std::unique_ptr<Expr> Parser::ParsePostfix() {
+  auto expr = ParsePrimary();
+  while (true) {
+    if (Match(TokenKind::Dot) || Match(TokenKind::Arrow)) {
+      const bool via_pointer = previous_.kind == TokenKind::Arrow;
+      const SourceLocation loc = previous_.location;
+      if (!Expect(TokenKind::Identifier,
+                  "expected member name after '.' or '->'")) {
+        return expr;
+      }
+      expr = std::make_unique<MemberExpr>(loc, std::move(expr),
+                                          previous_.lexeme, via_pointer);
+      continue;
+    }
+    break;
+  }
+  return expr;
 }
 
 std::vector<std::unique_ptr<Expr>> Parser::ParseArguments() {

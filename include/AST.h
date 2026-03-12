@@ -14,6 +14,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -29,30 +30,97 @@ enum class BaseType {
   Void,
 };
 
+enum class UserTypeKind {
+  None,
+  Struct,
+  Union,
+  Enum,
+};
+
+struct FunctionPointerSignature;
+
 struct Type {
+  Type() = default;
+  Type(BaseType base_type, unsigned ptr_depth)
+      : base(base_type), pointer_depth(ptr_depth) {}
+
+  UserTypeKind user_kind = UserTypeKind::None;
+  std::string user_tag;
   BaseType base = BaseType::Int;
   unsigned pointer_depth = 0;
+  std::vector<unsigned> array_dimensions;
+  std::shared_ptr<FunctionPointerSignature> function_pointer;
 
-  bool operator==(const Type &other) const {
-    return base == other.base && pointer_depth == other.pointer_depth;
+  bool operator==(const Type &other) const;
+};
+
+struct TagMemberDecl {
+  std::string name;
+  Type type;
+};
+
+struct TagTypeDecl {
+  UserTypeKind kind = UserTypeKind::None;
+  std::string tag;
+  std::vector<TagMemberDecl> members;
+};
+
+struct FunctionPointerSignature {
+  Type return_type;
+  std::vector<Type> param_types;
+  bool is_variadic = false;
+
+  bool operator==(const FunctionPointerSignature &other) const {
+    return return_type == other.return_type &&
+           param_types == other.param_types &&
+           is_variadic == other.is_variadic;
   }
 };
 
-inline bool IsPointerType(const Type &type) { return type.pointer_depth > 0; }
+inline bool Type::operator==(const Type &other) const {
+  const bool sig_eq =
+      (!function_pointer && !other.function_pointer) ||
+      (function_pointer && other.function_pointer &&
+       *function_pointer == *other.function_pointer);
+  return user_kind == other.user_kind && user_tag == other.user_tag &&
+         base == other.base && pointer_depth == other.pointer_depth &&
+         array_dimensions == other.array_dimensions && sig_eq;
+}
+
+inline bool IsArrayType(const Type &type) {
+  return !type.array_dimensions.empty();
+}
+
+inline bool IsFunctionPointerType(const Type &type) {
+  return type.function_pointer != nullptr;
+}
+
+inline bool IsPointerType(const Type &type) {
+  return type.pointer_depth > 0 || IsFunctionPointerType(type);
+}
 
 inline bool IsVoidType(const Type &type) {
-  return type.pointer_depth == 0 && type.base == BaseType::Void;
+  return type.user_kind == UserTypeKind::None && type.pointer_depth == 0 &&
+         !IsArrayType(type) && !IsFunctionPointerType(type) &&
+         type.base == BaseType::Void;
 }
 
 inline bool IsIntegerType(const Type &type) {
-  if (IsPointerType(type)) {
+  if (IsPointerType(type) || IsArrayType(type)) {
+    return false;
+  }
+  if (type.user_kind == UserTypeKind::Enum) {
+    return true;
+  }
+  if (type.user_kind != UserTypeKind::None) {
     return false;
   }
   return type.base == BaseType::Int || type.base == BaseType::Char;
 }
 
 inline bool IsFloatingType(const Type &type) {
-  if (IsPointerType(type)) {
+  if (IsPointerType(type) || IsArrayType(type) ||
+      type.user_kind != UserTypeKind::None) {
     return false;
   }
   return type.base == BaseType::Float || type.base == BaseType::Double;
@@ -63,11 +131,18 @@ inline bool IsNumericType(const Type &type) {
 }
 
 inline bool IsVoidPointerType(const Type &type) {
-  return type.pointer_depth > 0 && type.base == BaseType::Void;
+  return type.user_kind == UserTypeKind::None && type.pointer_depth > 0 &&
+         type.base == BaseType::Void;
 }
 
 inline int NumericRank(const Type &type) {
-  if (IsPointerType(type)) {
+  if (IsPointerType(type) || IsArrayType(type)) {
+    return -1;
+  }
+  if (type.user_kind == UserTypeKind::Enum) {
+    return 1;
+  }
+  if (type.user_kind != UserTypeKind::None) {
     return -1;
   }
   switch (type.base) {
@@ -91,25 +166,71 @@ inline Type CommonNumericType(const Type &left, const Type &right) {
 
 inline std::string TypeToString(const Type &type) {
   std::ostringstream out;
-  switch (type.base) {
-  case BaseType::Int:
-    out << "int";
+  auto AppendBase = [&out](std::string_view keyword, const std::string &tag) {
+    out << keyword;
+    if (!tag.empty()) {
+      out << " " << tag;
+    }
+  };
+
+  switch (type.user_kind) {
+  case UserTypeKind::Struct:
+    AppendBase("struct", type.user_tag);
     break;
-  case BaseType::Char:
-    out << "char";
+  case UserTypeKind::Union:
+    AppendBase("union", type.user_tag);
     break;
-  case BaseType::Float:
-    out << "float";
+  case UserTypeKind::Enum:
+    AppendBase("enum", type.user_tag);
     break;
-  case BaseType::Double:
-    out << "double";
-    break;
-  case BaseType::Void:
-    out << "void";
+  case UserTypeKind::None:
+    switch (type.base) {
+    case BaseType::Int:
+      out << "int";
+      break;
+    case BaseType::Char:
+      out << "char";
+      break;
+    case BaseType::Float:
+      out << "float";
+      break;
+    case BaseType::Double:
+      out << "double";
+      break;
+    case BaseType::Void:
+      out << "void";
+      break;
+    }
     break;
   }
+
+  if (type.function_pointer) {
+    out << " (";
+    for (unsigned i = 0; i < type.pointer_depth; ++i) {
+      out << "*";
+    }
+    out << ")(";
+    for (size_t i = 0; i < type.function_pointer->param_types.size(); ++i) {
+      if (i != 0) {
+        out << ", ";
+      }
+      out << TypeToString(type.function_pointer->param_types[i]);
+    }
+    if (type.function_pointer->is_variadic) {
+      if (!type.function_pointer->param_types.empty()) {
+        out << ", ";
+      }
+      out << "...";
+    }
+    out << ")";
+    return out.str();
+  }
+
   for (unsigned i = 0; i < type.pointer_depth; ++i) {
     out << "*";
+  }
+  for (unsigned dim : type.array_dimensions) {
+    out << "[" << dim << "]";
   }
   return out.str();
 }
@@ -188,6 +309,16 @@ struct CastExpr : Expr {
   std::unique_ptr<Expr> operand;
 };
 
+struct MemberExpr : Expr {
+  MemberExpr(SourceLocation loc, std::unique_ptr<Expr> base,
+             std::string member_name, bool via_pointer)
+      : Expr(loc), base(std::move(base)), member_name(std::move(member_name)),
+        via_pointer(via_pointer) {}
+  std::unique_ptr<Expr> base;
+  std::string member_name;
+  bool via_pointer = false;
+};
+
 struct BinaryExpr : Expr {
   BinaryExpr(SourceLocation loc, BinaryOp op, std::unique_ptr<Expr> lhs,
              std::unique_ptr<Expr> rhs)
@@ -198,10 +329,10 @@ struct BinaryExpr : Expr {
 };
 
 struct AssignmentExpr : Expr {
-  AssignmentExpr(SourceLocation loc, std::string name,
+  AssignmentExpr(SourceLocation loc, std::unique_ptr<Expr> target,
                  std::unique_ptr<Expr> value)
-      : Expr(loc), name(std::move(name)), value(std::move(value)) {}
-  std::string name;
+      : Expr(loc), target(std::move(target)), value(std::move(value)) {}
+  std::unique_ptr<Expr> target;
   std::unique_ptr<Expr> value;
 };
 
@@ -286,6 +417,7 @@ struct FunctionDecl : Node {
 
 struct Program : Node {
   explicit Program(SourceLocation loc) : Node(loc) {}
+  std::vector<TagTypeDecl> tag_types;
   std::vector<std::unique_ptr<FunctionDecl>> functions;
 };
 

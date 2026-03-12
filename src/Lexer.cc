@@ -22,6 +22,8 @@ const std::unordered_map<std::string, TokenKind> kKeywords = {
 		{"int", TokenKind::KwInt},     {"void", TokenKind::KwVoid},
 		{"char", TokenKind::KwChar},
 		{"float", TokenKind::KwFloat}, {"double", TokenKind::KwDouble},
+		{"struct", TokenKind::KwStruct}, {"union", TokenKind::KwUnion},
+		{"enum", TokenKind::KwEnum},
 		{"return", TokenKind::KwReturn}, {"if", TokenKind::KwIf},
 	{"else", TokenKind::KwElse},   {"while", TokenKind::KwWhile},
 	{"extern", TokenKind::KwExtern},
@@ -224,6 +226,8 @@ Token Lexer::NextToken() {
 		case ')': return MakeToken(TokenKind::RParen, loc, ")");
 		case '{': return MakeToken(TokenKind::LBrace, loc, "{");
 		case '}': return MakeToken(TokenKind::RBrace, loc, "}");
+		case '[': return MakeToken(TokenKind::LBracket, loc, "[");
+		case ']': return MakeToken(TokenKind::RBracket, loc, "]");
 		case ',': return MakeToken(TokenKind::Comma, loc, ",");
 		case '.':
 			if (CurrentChar() == '.' && PeekChar() == '.') {
@@ -231,10 +235,15 @@ Token Lexer::NextToken() {
 				Advance();
 				return MakeToken(TokenKind::Ellipsis, loc, "...");
 			}
-			break;
+			return MakeToken(TokenKind::Dot, loc, ".");
 		case ';': return MakeToken(TokenKind::Semicolon, loc, ";");
 		case '+': return MakeToken(TokenKind::Plus, loc, "+");
-		case '-': return MakeToken(TokenKind::Minus, loc, "-");
+		case '-':
+			if (CurrentChar() == '>') {
+				Advance();
+				return MakeToken(TokenKind::Arrow, loc, "->");
+			}
+			return MakeToken(TokenKind::Minus, loc, "-");
 		case '*': return MakeToken(TokenKind::Star, loc, "*");
 		case '%': return MakeToken(TokenKind::Percent, loc, "%");
 		case '/': return MakeToken(TokenKind::Slash, loc, "/");
@@ -293,6 +302,9 @@ const char* TokenKindName(TokenKind kind) {
 		case TokenKind::KwFloat: return "float";
 		case TokenKind::KwDouble: return "double";
 		case TokenKind::KwVoid: return "void";
+		case TokenKind::KwStruct: return "struct";
+		case TokenKind::KwUnion: return "union";
+		case TokenKind::KwEnum: return "enum";
 		case TokenKind::KwReturn: return "return";
 		case TokenKind::KwIf: return "if";
 		case TokenKind::KwElse: return "else";
@@ -302,9 +314,13 @@ const char* TokenKindName(TokenKind kind) {
 		case TokenKind::RParen: return ")";
 		case TokenKind::LBrace: return "{";
 		case TokenKind::RBrace: return "}";
+		case TokenKind::LBracket: return "[";
+		case TokenKind::RBracket: return "]";
 		case TokenKind::Comma: return ",";
 		case TokenKind::Ellipsis: return "...";
 		case TokenKind::Semicolon: return ";";
+		case TokenKind::Dot: return ".";
+		case TokenKind::Arrow: return "->";
 		case TokenKind::Plus: return "+";
 		case TokenKind::Minus: return "-";
 		case TokenKind::Star: return "*";

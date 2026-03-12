@@ -26,6 +26,14 @@ class Parser {
 	std::unique_ptr<Program> ParseProgram();
 
  private:
+	struct ParsedDeclarator {
+		std::string name;
+		Type type;
+		bool is_function = false;
+		std::vector<ParamDecl> function_params;
+		bool function_is_variadic = false;
+	};
+
 	bool Match(TokenKind kind);
 	bool Check(TokenKind kind) const;
 	bool Expect(TokenKind kind, const char* message);
@@ -33,7 +41,14 @@ class Parser {
 	void Synchronize();
 
 	bool IsTypeSpecifier(TokenKind kind) const;
+	Type ParseTypeSpecifier();
 	Type ParseType();
+	ParsedDeclarator ParseDeclarator(const Type& base_type,
+								 bool require_identifier,
+								 bool allow_function_suffix);
+	std::vector<TagMemberDecl> ParseTagDefinitionBody();
+	void RegisterTagTypeDecl(UserTypeKind kind, const std::string& tag,
+							 const std::vector<TagMemberDecl>& members);
 	std::unique_ptr<FunctionDecl> ParseFunction();
 	std::vector<ParamDecl> ParseParameterList(bool& is_variadic);
 
@@ -54,6 +69,7 @@ class Parser {
 	std::unique_ptr<Expr> ParseTerm();
 	std::unique_ptr<Expr> ParseFactor();
 	std::unique_ptr<Expr> ParseUnary();
+	std::unique_ptr<Expr> ParsePostfix();
 	std::unique_ptr<Expr> ParsePrimary();
 	std::vector<std::unique_ptr<Expr>> ParseArguments();
 
@@ -62,6 +78,7 @@ class Parser {
 	Token current_;
 	Token previous_;
 	std::deque<std::unique_ptr<Stmt>> pending_statements_;
+	std::vector<TagTypeDecl> parsed_tag_types_;
 };
 
 }  // namespace ccc

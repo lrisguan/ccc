@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include <unordered_map>
+
 #include "AST.h"
 #include "SymbolTable.h"
 #include "error.h"
@@ -27,10 +29,13 @@ class SemanticAnalyzer {
 	void AnalyzeFunction(const FunctionDecl& fn);
 	void AnalyzeStmt(const Stmt& stmt);
 	Type AnalyzeExpr(const Expr& expr);
+	Type AnalyzeLValueExpr(const Expr& expr);
 	bool IsAssignable(const Type& target, const Type& source) const;
+	const TagTypeDecl* LookupTagType(const Type& type) const;
 
 	DiagnosticEngine& diag_;
 	SymbolTable symbols_;
+	std::unordered_map<std::string, TagTypeDecl> tag_types_;
 	Type current_return_type_;
 };
 
