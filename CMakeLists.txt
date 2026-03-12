@@ -59,8 +59,8 @@ endif()
 
 target_link_libraries(ccc PRIVATE
 	/usr/lib/llvm-18/lib/libLLVM-18.so
-	/usr/lib/llvm-18/lib/liblldCommon.a
 	/usr/lib/llvm-18/lib/liblldELF.a
+	/usr/lib/llvm-18/lib/liblldCommon.a
 	zstd
 	z
 	dl
@@ -72,3 +72,118 @@ target_link_libraries(ccc PRIVATE
 enable_testing()
 add_test(NAME ccc_help COMMAND ccc)
 set_tests_properties(ccc_help PROPERTIES WILL_FAIL TRUE)
+
+function(add_ccc_integration_test test_name expected_exit)
+	set(options)
+	set(oneValueArgs)
+	set(multiValueArgs SOURCES COMPILE_ARGS)
+	cmake_parse_arguments(T "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+	if(NOT T_SOURCES)
+		message(FATAL_ERROR "add_ccc_integration_test(${test_name}) requires SOURCES")
+	endif()
+
+	set(abs_sources)
+	foreach(rel_source IN LISTS T_SOURCES)
+		list(APPEND abs_sources "${CMAKE_SOURCE_DIR}/${rel_source}")
+	endforeach()
+
+	set(out_bin "${CMAKE_BINARY_DIR}/${test_name}_app")
+	add_test(NAME ${test_name}_compile
+		COMMAND $<TARGET_FILE:ccc> ${abs_sources} ${T_COMPILE_ARGS} -o ${out_bin})
+	add_test(NAME ${test_name}_run
+		COMMAND /bin/bash -c "\"${out_bin}\" >/dev/null 2>&1; test $? -eq ${expected_exit}")
+	set_tests_properties(${test_name}_run PROPERTIES DEPENDS ${test_name}_compile)
+endfunction()
+
+function(add_ccc_invalid_test test_name source_relpath)
+	set(out_bin "${CMAKE_BINARY_DIR}/${test_name}_invalid_app")
+	add_test(NAME ${test_name}_invalid_compile
+		COMMAND $<TARGET_FILE:ccc> ${CMAKE_SOURCE_DIR}/${source_relpath} -o ${out_bin})
+	set_tests_properties(${test_name}_invalid_compile PROPERTIES WILL_FAIL TRUE)
+endfunction()
+
+# integration/return
+add_ccc_integration_test(ret_basic_return 1
+	SOURCES tests/integration/return/basic_return.c)
+
+# integration/preprocess
+add_ccc_integration_test(pp_comment 2
+	SOURCES tests/integration/preprocess/comment.c)
+add_ccc_integration_test(pp_if_elif 1
+	SOURCES tests/integration/preprocess/if_elif.c)
+add_ccc_integration_test(pp_macro_value 0
+	SOURCES tests/integration/preprocess/macro_value.c
+	COMPILE_ARGS -DVALUE=42)
+
+# integration/emit
+add_ccc_integration_test(emit_simple 0
+	SOURCES tests/integration/emit/simple.c tests/integration/emit/helper.c)
+
+# integration/multi_file
+add_ccc_integration_test(multi_test1 0
+	SOURCES tests/integration/multi_file/test1/multi_file_main.c
+			tests/integration/multi_file/test1/multi_file_helper.c)
+add_ccc_integration_test(multi_test2 40
+	SOURCES tests/integration/multi_file/test2/main.c
+			tests/integration/multi_file/test2/test.c)
+
+# integration/std
+set(CCC_STD_TEST_DEFINES -D__x86_64__=1 -D__LP64__=1)
+add_ccc_integration_test(std_ctype 0
+	SOURCES tests/integration/std/ctype.c
+	COMPILE_ARGS ${CCC_STD_TEST_DEFINES})
+add_ccc_integration_test(std_errno 0
+	SOURCES tests/integration/std/errno.c
+	COMPILE_ARGS ${CCC_STD_TEST_DEFINES})
+add_ccc_integration_test(std_limits 8
+	SOURCES tests/integration/std/limits.c
+	COMPILE_ARGS ${CCC_STD_TEST_DEFINES})
+add_ccc_integration_test(std_stdarg 0
+	SOURCES tests/integration/std/stdarg.c
+	COMPILE_ARGS ${CCC_STD_TEST_DEFINES})
+add_ccc_integration_test(std_stddef 0
+	SOURCES tests/integration/std/stddef.c
+	COMPILE_ARGS ${CCC_STD_TEST_DEFINES})
+add_ccc_integration_test(std_stdio 1
+	SOURCES tests/integration/std/stdio.c
+	COMPILE_ARGS ${CCC_STD_TEST_DEFINES})
+add_ccc_integration_test(std_stdlib 0
+	SOURCES tests/integration/std/stdlib.c
+	COMPILE_ARGS ${CCC_STD_TEST_DEFINES})
+add_ccc_integration_test(std_string 0
+	SOURCES tests/integration/std/string.c
+	COMPILE_ARGS ${CCC_STD_TEST_DEFINES})
+add_ccc_integration_test(std_variadic_decl_call 0
+	SOURCES tests/integration/std/variadic_decl_call.c
+	COMPILE_ARGS ${CCC_STD_TEST_DEFINES})
+
+# integration/type
+add_ccc_integration_test(type_array 0
+	SOURCES tests/integration/type/array_type.c)
+add_ccc_integration_test(type_char 0
+	SOURCES tests/integration/type/char.c)
+add_ccc_integration_test(type_enum 0
+	SOURCES tests/integration/type/enum_type.c)
+add_ccc_integration_test(type_float_double 0
+	SOURCES tests/integration/type/float_double.c)
+add_ccc_integration_test(type_function_pointer 0
+	SOURCES tests/integration/type/function_pointer_type.c)
+add_ccc_integration_test(type_pointer_levels 0
+	SOURCES tests/integration/type/pointer_levels.c)
+add_ccc_integration_test(type_pointer_void 0
+	SOURCES tests/integration/type/pointer_void.c)
+add_ccc_integration_test(type_struct_member_dot 0
+	SOURCES tests/integration/type/struct_member_dot.c)
+add_ccc_integration_test(type_struct_member_arrow 0
+	SOURCES tests/integration/type/struct_member_arrow.c)
+add_ccc_integration_test(type_struct 0
+	SOURCES tests/integration/type/struct_type.c)
+add_ccc_integration_test(type_union 0
+	SOURCES tests/integration/type/union_type.c)
+
+# invalid
+add_ccc_invalid_test(invalid_conflicting_prototype
+	tests/invalid/conflicting_prototype.c)
+add_ccc_invalid_test(invalid_undeclared_var
+	tests/invalid/undeclared_var.c)
