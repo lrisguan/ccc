@@ -3,14 +3,42 @@
 `ccc` is a toy compiler frontend project that parses a C language subset with a hand-written frontend and uses LLVM as backend for object code generation and optimization.
 
 ## Support matrix
-- Function declarations (prototypes) and definitions.
-- `extern` function declarations.
-- Function definitions with `int` / `void` return type.
-- Parameters of type `int`.
-- Statements: block, variable declaration, expression statement, `if/else`, `while`, `return`.
-- Expressions: integer literals, identifiers, function calls, assignment, unary (`-`, `!`), binary arithmetic/comparison/logical operators.
-- End-to-end pipeline: source -> AST -> semantic analysis -> LLVM IR -> object file -> executable.
-| | |
+<details>
+<summary>Show supported types and syntax</summary>
+
+- Type system:
+	- Builtin scalar types: `char`, `int`, `float`, `double`, `void`.
+	- Pointers (including multi-level pointers and `void*`).
+	- Arrays (declaration and array-to-pointer decay in parameter/expr contexts).
+	- Tagged user types: `struct`, `union`, `enum`.
+	- Function pointer types (declaration, assignment, argument passing).
+- Declarations and definitions:
+	- Function declarations (prototypes) and definitions.
+	- `extern` function declarations.
+	- Multi-file compilation and linking.
+- Expressions:
+	- Literals: integer, floating-point, string.
+	- Identifier references and function calls.
+	- Assignment to assignable lvalues.
+	- Unary operators: `-`, `!`.
+	- Binary operators: arithmetic, comparison, equality, logical.
+	- Cast expressions.
+	- Struct/union member access: `.` and `->`.
+- Statements:
+	- Block statement.
+	- Variable declaration statement.
+	- Expression statement.
+	- `if/else`, `while`, `return`.
+- Frontend and preprocessing:
+	- Basic macro handling (`-D`, `-U`, object-like macros).
+	- Conditional preprocessing (`#if/#elif/#else/#endif`, `defined(...)`).
+	- Header include handling with configured include paths.
+- Code generation pipeline:
+	- source -> preprocess -> lexer/parser -> semantic analysis -> LLVM IR -> object file -> executable.
+- Testing status:
+	- CMake/CTest integration covers all current files under `tests/integration/*` and `tests/invalid/*`.
+
+</details>
 
 ## Quick start
 
