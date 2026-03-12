@@ -26,6 +26,7 @@ const std::unordered_map<std::string, TokenKind> kKeywords = {
 		{"enum", TokenKind::KwEnum},
 		{"return", TokenKind::KwReturn}, {"if", TokenKind::KwIf},
 	{"else", TokenKind::KwElse},   {"while", TokenKind::KwWhile},
+	{"for", TokenKind::KwFor},
 	{"extern", TokenKind::KwExtern},
 };
 
@@ -309,6 +310,7 @@ const char* TokenKindName(TokenKind kind) {
 		case TokenKind::KwIf: return "if";
 		case TokenKind::KwElse: return "else";
 		case TokenKind::KwWhile: return "while";
+		case TokenKind::KwFor: return "for";
 		case TokenKind::KwExtern: return "extern";
 		case TokenKind::LParen: return "(";
 		case TokenKind::RParen: return ")";

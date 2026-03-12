@@ -61,6 +61,7 @@ void Parser::Synchronize() {
     switch (current_.kind) {
     case TokenKind::KwIf:
     case TokenKind::KwWhile:
+    case TokenKind::KwFor:
     case TokenKind::KwReturn:
     case TokenKind::KwInt:
     case TokenKind::KwChar:
@@ -431,6 +432,9 @@ std::unique_ptr<Stmt> Parser::ParseStatement() {
   if (Check(TokenKind::KwWhile)) {
     return ParseWhileStatement();
   }
+  if (Check(TokenKind::KwFor)) {
+    return ParseForStatement();
+  }
   if (Check(TokenKind::KwReturn)) {
     return ParseReturnStatement();
   }
@@ -497,6 +501,86 @@ std::unique_ptr<Stmt> Parser::ParseWhileStatement() {
   auto body = ParseStatement();
   return std::make_unique<WhileStmt>(loc, std::move(condition),
                                      std::move(body));
+}
+
+std::unique_ptr<Stmt> Parser::ParseForInitStatement() {
+  const SourceLocation loc = current_.location;
+  if (IsTypeSpecifier(current_.kind)) {
+    const Type base = ParseTypeSpecifier();
+    std::vector<std::unique_ptr<Stmt>> decls;
+    while (true) {
+      auto decl = ParseDeclarator(base, true, false);
+      if (decl.name.empty()) {
+        break;
+      }
+      if (IsVoidType(decl.type)) {
+        diag_.ReportError(loc, "variables cannot have type void");
+      }
+
+      std::unique_ptr<Expr> init;
+      if (Match(TokenKind::Equal)) {
+        init = ParseExpression();
+      }
+      decls.push_back(std::make_unique<VarDeclStmt>(
+          loc, std::move(decl.name), decl.type, std::move(init)));
+
+      if (!Match(TokenKind::Comma)) {
+        break;
+      }
+    }
+
+    if (decls.empty()) {
+      return nullptr;
+    }
+    if (decls.size() == 1) {
+      return std::move(decls.front());
+    }
+
+    auto block = std::make_unique<CompoundStmt>(loc);
+    for (auto &decl : decls) {
+      block->statements.push_back(std::move(decl));
+    }
+    return block;
+  }
+
+  auto expr = ParseExpression();
+  return std::make_unique<ExprStmt>(loc, std::move(expr));
+}
+
+std::unique_ptr<Stmt> Parser::ParseForStatement() {
+  const SourceLocation loc = current_.location;
+  Advance();
+  if (!Expect(TokenKind::LParen, "expected '(' after for")) {
+    return nullptr;
+  }
+
+  std::unique_ptr<Stmt> init;
+  if (!Check(TokenKind::Semicolon)) {
+    init = ParseForInitStatement();
+  }
+  if (!Expect(TokenKind::Semicolon, "expected ';' after for init")) {
+    return nullptr;
+  }
+
+  std::unique_ptr<Expr> condition;
+  if (!Check(TokenKind::Semicolon)) {
+    condition = ParseExpression();
+  }
+  if (!Expect(TokenKind::Semicolon, "expected ';' after for condition")) {
+    return nullptr;
+  }
+
+  std::unique_ptr<Expr> increment;
+  if (!Check(TokenKind::RParen)) {
+    increment = ParseExpression();
+  }
+  if (!Expect(TokenKind::RParen, "expected ')' after for clauses")) {
+    return nullptr;
+  }
+
+  auto body = ParseStatement();
+  return std::make_unique<ForStmt>(loc, std::move(init), std::move(condition),
+                                   std::move(increment), std::move(body));
 }
 
 std::unique_ptr<Stmt> Parser::ParseReturnStatement() {

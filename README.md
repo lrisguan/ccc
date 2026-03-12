@@ -28,7 +28,7 @@
 	- Block statement.
 	- Variable declaration statement.
 	- Expression statement.
-	- `if/else`, `while`, `return`.
+	- `if/else`, `while`, `for`, `return`.
 - Frontend and preprocessing:
 	- Basic macro handling (`-D`, `-U`, object-like macros).
 	- Conditional preprocessing (`#if/#elif/#else/#endif`, `defined(...)`).
@@ -68,7 +68,11 @@ git clone https://github.com/lrisguan/ccc.git
 cmake -S . -B build
 cmake --build build -j
 ```
-
+### test
+test pre-written C file.
+```bash
+ctest --test-dir /home/lrisguan/code/ccc/build --output-on-failure
+```
 ### Usage
 
 ```bash

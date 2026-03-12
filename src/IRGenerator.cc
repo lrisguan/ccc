@@ -1042,6 +1042,60 @@ bool IRGenerator::EmitStmt(const Stmt &stmt) {
     return true;
   }
 
+  if (const auto *s = dynamic_cast<const ForStmt *>(&stmt)) {
+    EnterScope();
+
+    if (s->init && !EmitStmt(*s->init)) {
+      ExitScope();
+      return false;
+    }
+
+    llvm::Function *fn = builder_->GetInsertBlock()->getParent();
+    llvm::BasicBlock *cond_bb =
+        llvm::BasicBlock::Create(*context_, "for.cond", fn);
+    llvm::BasicBlock *body_bb =
+        llvm::BasicBlock::Create(*context_, "for.body", fn);
+    llvm::BasicBlock *inc_bb =
+        llvm::BasicBlock::Create(*context_, "for.inc", fn);
+    llvm::BasicBlock *end_bb = llvm::BasicBlock::Create(*context_, "for.end", fn);
+
+    builder_->CreateBr(cond_bb);
+
+    builder_->SetInsertPoint(cond_bb);
+    if (s->condition) {
+      llvm::Value *cond = EmitCondition(*s->condition);
+      if (!cond) {
+        ExitScope();
+        return false;
+      }
+      builder_->CreateCondBr(cond, body_bb, end_bb);
+    } else {
+      builder_->CreateBr(body_bb);
+    }
+
+    builder_->SetInsertPoint(body_bb);
+    if (!EmitStmt(*s->body)) {
+      ExitScope();
+      return false;
+    }
+    if (!builder_->GetInsertBlock()->getTerminator()) {
+      builder_->CreateBr(inc_bb);
+    }
+
+    builder_->SetInsertPoint(inc_bb);
+    if (s->increment && !EmitExpr(*s->increment)) {
+      ExitScope();
+      return false;
+    }
+    if (!builder_->GetInsertBlock()->getTerminator()) {
+      builder_->CreateBr(cond_bb);
+    }
+
+    builder_->SetInsertPoint(end_bb);
+    ExitScope();
+    return true;
+  }
+
   diag_.ReportError(stmt.location,
                     "unsupported statement during IR generation");
   return false;

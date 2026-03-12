@@ -35,6 +35,7 @@ enum class TokenKind {
 	KwIf,
 	KwElse,
 	KwWhile,
+	KwFor,
 	KwExtern,
 	LParen,
 	RParen,

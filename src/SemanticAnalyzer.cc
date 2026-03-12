@@ -203,6 +203,26 @@ void SemanticAnalyzer::AnalyzeStmt(const Stmt &stmt) {
     return;
   }
 
+  if (const auto *s = dynamic_cast<const ForStmt *>(&stmt)) {
+    symbols_.EnterScope();
+    if (s->init) {
+      AnalyzeStmt(*s->init);
+    }
+    if (s->condition) {
+      const Type cond = AnalyzeExpr(*s->condition);
+      if (!IsConditionType(cond)) {
+        diag_.ReportError(s->condition->location,
+                          "for condition must be numeric or pointer");
+      }
+    }
+    if (s->increment) {
+      AnalyzeExpr(*s->increment);
+    }
+    AnalyzeStmt(*s->body);
+    symbols_.ExitScope();
+    return;
+  }
+
   if (const auto *s = dynamic_cast<const ExprStmt *>(&stmt)) {
     if (s->expr) {
       AnalyzeExpr(*s->expr);

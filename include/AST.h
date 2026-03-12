@@ -390,6 +390,18 @@ struct WhileStmt : Stmt {
   std::unique_ptr<Stmt> body;
 };
 
+struct ForStmt : Stmt {
+  ForStmt(SourceLocation loc, std::unique_ptr<Stmt> init,
+          std::unique_ptr<Expr> condition, std::unique_ptr<Expr> increment,
+          std::unique_ptr<Stmt> body)
+      : Stmt(loc), init(std::move(init)), condition(std::move(condition)),
+        increment(std::move(increment)), body(std::move(body)) {}
+  std::unique_ptr<Stmt> init;
+  std::unique_ptr<Expr> condition;
+  std::unique_ptr<Expr> increment;
+  std::unique_ptr<Stmt> body;
+};
+
 struct ParamDecl {
   SourceLocation location;
   std::string name;

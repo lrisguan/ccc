@@ -120,6 +120,10 @@ add_ccc_integration_test(pp_macro_value 0
 add_ccc_integration_test(emit_simple 0
 	SOURCES tests/integration/emit/simple.c tests/integration/emit/helper.c)
 
+# integration/loop
+add_ccc_integration_test(loop_for_nested_if 0
+	SOURCES tests/integration/loop/for_nested_if.c)
+
 # integration/multi_file
 add_ccc_integration_test(multi_test1 0
 	SOURCES tests/integration/multi_file/test1/multi_file_main.c

@@ -56,6 +56,8 @@ class Parser {
 	std::unique_ptr<CompoundStmt> ParseCompoundStatement();
 	std::unique_ptr<Stmt> ParseIfStatement();
 	std::unique_ptr<Stmt> ParseWhileStatement();
+	std::unique_ptr<Stmt> ParseForStatement();
+	std::unique_ptr<Stmt> ParseForInitStatement();
 	std::unique_ptr<Stmt> ParseReturnStatement();
 	std::unique_ptr<Stmt> ParseVarDeclStatement();
 	std::unique_ptr<Stmt> ParseExpressionStatement();
