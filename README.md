@@ -71,7 +71,7 @@ cmake --build build -j
 ### Test
 test pre-written C file.
 ```bash
-ctest --test-dir /home/lrisguan/code/ccc/build --output-on-failure
+ctest --test-dir ./build --output-on-failure
 ```
 ### Usage
 
