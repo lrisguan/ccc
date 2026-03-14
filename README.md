@@ -41,7 +41,7 @@
 </details>
 
 ## 🚀 Quick start
-> [!Tip
+> [!Tip]
 > You can also just run shell script:
 > ```bash
 > ./run.sh
