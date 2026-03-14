@@ -41,6 +41,12 @@
 </details>
 
 ## 🚀 Quick start
+> [!Tip
+> You can also just run shell script:
+> ```bash
+> ./run.sh
+> ```
+> for configuring, building and testing.
 
 > [!Important]
 > Requirements:
