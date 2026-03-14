@@ -40,7 +40,7 @@
 
 </details>
 
-## Quick start
+## 🚀 Quick start
 
 > [!Important]
 > Requirements:
